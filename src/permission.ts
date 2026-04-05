@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+// Claude Code Channels spec: request_id is 5 lowercase letters (a-z excluding 'l')
+// 'l' excluded to avoid confusion with '1'/'I' on mobile keyboards
 const VERDICT_PATTERN = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 export interface Verdict {
