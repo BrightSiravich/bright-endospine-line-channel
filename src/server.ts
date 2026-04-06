@@ -182,6 +182,30 @@ console.error(`[line] Access mode: ${accessControl.getMode()}`)
 // --- Start Tunnel & Configure Webhook ---
 let killTunnel: (() => void) | null = null
 
+async function waitForTunnelReachable(url: string, maxAttempts: number = 10): Promise<void> {
+  const testUrl = `${url}/webhook`
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const res = await fetch(testUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(3000),
+      })
+      // 401 = server responded (signature missing), tunnel is reachable
+      if (res.status === 401) {
+        console.error(`[line] Tunnel reachable (attempt ${i + 1}/${maxAttempts})`)
+        return
+      }
+    } catch {
+      // Connection failed, tunnel not ready yet
+    }
+    console.error(`[line] Waiting for tunnel to become reachable... (${i + 1}/${maxAttempts})`)
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  throw new Error('Tunnel URL never became reachable')
+}
+
 async function setupTunnelAndWebhook(): Promise<void> {
   console.error('[line] Starting cloudflared tunnel (killing existing tunnels first)...')
   const tunnel = await startTunnel(PORT)
@@ -189,11 +213,20 @@ async function setupTunnelAndWebhook(): Promise<void> {
   const webhookUrl = `${tunnel.url}/webhook`
   console.error(`[line] Tunnel URL: ${tunnel.url}`)
 
-  // Set webhook URL via LINE API
+  // Wait for tunnel to be externally reachable before calling LINE API
+  await waitForTunnelReachable(tunnel.url)
+
+  // Set webhook URL via LINE API (with retry since LINE validates reachability)
   console.error(`[line] Setting webhook URL: ${webhookUrl}`)
-  const setResult = await lineClient.setWebhookUrl(webhookUrl)
-  if (!setResult) {
-    throw new Error('Failed to set webhook URL via LINE API')
+  let setOk = false
+  for (let i = 0; i < 3; i++) {
+    setOk = await lineClient.setWebhookUrl(webhookUrl)
+    if (setOk) break
+    console.error(`[line] Webhook URL set attempt ${i + 1}/3 failed, retrying in 3s...`)
+    await new Promise((r) => setTimeout(r, 3000))
+  }
+  if (!setOk) {
+    throw new Error('Failed to set webhook URL via LINE API after 3 attempts')
   }
   console.error('[line] Webhook URL set successfully')
 
@@ -204,19 +237,16 @@ async function setupTunnelAndWebhook(): Promise<void> {
   }
   console.error('[line] Webhook URL verified in LINE')
 
-  // Test webhook connectivity with retry
+  // Test webhook connectivity via LINE's test API
   console.error('[line] Testing webhook connectivity...')
-  const maxRetries = 3
-  for (let i = 0; i < maxRetries; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
-    const testResult = await lineClient.testWebhook()
-    if (testResult.success) {
-      console.error(`[line] Webhook test PASSED (status: ${testResult.statusCode})`)
-      return
-    }
-    console.error(`[line] Webhook test attempt ${i + 1}/${maxRetries} FAILED (status: ${testResult.statusCode}, reason: ${testResult.reason})`)
+  await new Promise((r) => setTimeout(r, 2000))
+  const testResult = await lineClient.testWebhook()
+  if (testResult.success) {
+    console.error(`[line] Webhook connectivity test PASSED (status: ${testResult.statusCode})`)
+  } else {
+    console.error(`[line] Webhook connectivity test FAILED (status: ${testResult.statusCode}, reason: ${testResult.reason})`)
+    console.error('[line] Tunnel is running but LINE test failed. Messages may still work.')
   }
-  throw new Error(`Webhook test failed after ${maxRetries} attempts`)
 }
 
 // --- Graceful Shutdown ---
