@@ -18,6 +18,8 @@ export interface LineEvent {
 export interface LineSource {
   type: 'user' | 'group' | 'room'
   userId?: string
+  groupId?: string
+  roomId?: string
 }
 
 export interface LineMessage {

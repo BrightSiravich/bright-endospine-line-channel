@@ -33,8 +33,8 @@ const accessPath = join(channelDir, 'access.json')
 const lineClient = createLineClient(ACCESS_TOKEN)
 const accessControl = await createAccessControl(accessPath)
 
-// Track last active user and pending permission for relay
-let lastActiveUserId: string | null = null
+// Track last active reply target and pending permission for relay
+let lastReplyTo: string | null = null
 let lastPendingRequestId: string | null = null
 
 // --- MCP Server ---
@@ -108,21 +108,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // --- Permission Relay ---
 mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
-  const targetUserId = lastActiveUserId
-  if (!targetUserId) {
+  const target = lastReplyTo
+  if (!target) {
     console.error('[line] Permission request received but no active user')
     return
   }
   lastPendingRequestId = params.request_id
   const msg = buildPermissionRequestMessage(params)
-  await lineClient.pushRawMessages(targetUserId, [msg])
+  await lineClient.pushRawMessages(target, [msg])
 })
 
 // --- Webhook App ---
 const app = createWebhookApp({
   channelSecret: CHANNEL_SECRET,
-  onTextMessage: async (userId, text, eventId) => {
-    // Sender gating
+  onTextMessage: async (userId, text, eventId, replyTo) => {
+    // Sender gating (always by userId, even in groups)
     if (!accessControl.isAllowed(userId)) {
       if (accessControl.getMode() === 'pairing') {
         const result = accessControl.startPairing(userId)
@@ -154,13 +154,14 @@ const app = createWebhookApp({
       return
     }
 
-    lastActiveUserId = userId
+    lastReplyTo = replyTo
+    const meta: Record<string, string> = { user_id: userId }
+    if (replyTo !== userId) {
+      meta.group_id = replyTo
+    }
     await mcp.notification({
       method: 'notifications/claude/channel',
-      params: {
-        content: text,
-        meta: { user_id: userId },
-      },
+      params: { content: text, meta },
     })
   },
   onVerdict: async (behavior, requestId) => {

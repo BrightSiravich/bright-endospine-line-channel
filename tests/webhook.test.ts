@@ -84,6 +84,8 @@ describe('webhook', () => {
     expect(onTextMessage).toHaveBeenCalledTimes(1)
     expect(onTextMessage.mock.calls[0][0]).toBe('U_sender')
     expect(onTextMessage.mock.calls[0][1]).toBe('Hello')
+    // replyTo falls back to userId for 1:1 chat
+    expect(onTextMessage.mock.calls[0][3]).toBe('U_sender')
   })
 
   test('calls onVerdict for verdict messages', async () => {
@@ -114,6 +116,68 @@ describe('webhook', () => {
     expect(onVerdict).toHaveBeenCalledTimes(1)
     expect(onVerdict.mock.calls[0][0]).toBe('allow')
     expect(onVerdict.mock.calls[0][1]).toBe('abcde')
+  })
+
+  test('passes groupId as replyTo for group messages', async () => {
+    const onTextMessage = mock(() => {})
+    const body = JSON.stringify({
+      destination: 'U123',
+      events: [{
+        type: 'message',
+        webhookEventId: 'evt_grp_001',
+        timestamp: Date.now(),
+        source: { type: 'group', groupId: 'C_group_abc', userId: 'U_sender' },
+        message: { type: 'text', id: 'msg_grp_001', text: 'Hello from group' },
+      }],
+    })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage,
+      onVerdict: mock(() => {}),
+    })
+    const res = await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(200)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(onTextMessage).toHaveBeenCalledTimes(1)
+    expect(onTextMessage.mock.calls[0][0]).toBe('U_sender')
+    expect(onTextMessage.mock.calls[0][1]).toBe('Hello from group')
+    expect(onTextMessage.mock.calls[0][3]).toBe('C_group_abc')
+  })
+
+  test('passes roomId as replyTo for room messages', async () => {
+    const onTextMessage = mock(() => {})
+    const body = JSON.stringify({
+      destination: 'U123',
+      events: [{
+        type: 'message',
+        webhookEventId: 'evt_room_001',
+        timestamp: Date.now(),
+        source: { type: 'room', roomId: 'R_room_xyz', userId: 'U_sender' },
+        message: { type: 'text', id: 'msg_room_001', text: 'Hello from room' },
+      }],
+    })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage,
+      onVerdict: mock(() => {}),
+    })
+    const res = await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(200)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(onTextMessage).toHaveBeenCalledTimes(1)
+    expect(onTextMessage.mock.calls[0][0]).toBe('U_sender')
+    expect(onTextMessage.mock.calls[0][1]).toBe('Hello from room')
+    expect(onTextMessage.mock.calls[0][3]).toBe('R_room_xyz')
   })
 
   test('deduplicates events by webhookEventId', async () => {
