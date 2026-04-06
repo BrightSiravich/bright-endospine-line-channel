@@ -64,10 +64,10 @@ export function buildPermissionRequestMessage(params: PermissionRequestParams): 
             text: 'Permission Request',
             weight: 'bold',
             size: 'lg',
-            color: '#1a1a1a',
+            color: '#ffffff',
           },
         ],
-        backgroundColor: '#f5f5f5',
+        backgroundColor: '#2c2c2c',
         paddingAll: '16px',
       },
       body: {
@@ -80,8 +80,8 @@ export function buildPermissionRequestMessage(params: PermissionRequestParams): 
             layout: 'horizontal',
             spacing: 'sm',
             contents: [
-              { type: 'text', text: 'Tool', size: 'sm', color: '#888888', flex: 0 },
-              { type: 'text', text: params.tool_name, size: 'sm', weight: 'bold', wrap: true },
+              { type: 'text', text: 'Tool', size: 'sm', color: '#888888', flex: 2 },
+              { type: 'text', text: params.tool_name, size: 'sm', weight: 'bold', wrap: true, flex: 5 },
             ],
           },
           {
@@ -89,8 +89,8 @@ export function buildPermissionRequestMessage(params: PermissionRequestParams): 
             layout: 'horizontal',
             spacing: 'sm',
             contents: [
-              { type: 'text', text: 'Desc', size: 'sm', color: '#888888', flex: 0 },
-              { type: 'text', text: params.description, size: 'sm', wrap: true },
+              { type: 'text', text: 'Desc', size: 'sm', color: '#888888', flex: 2 },
+              { type: 'text', text: params.description, size: 'sm', wrap: true, flex: 5 },
             ],
           },
           { type: 'separator', margin: 'md' },
@@ -104,18 +104,27 @@ export function buildPermissionRequestMessage(params: PermissionRequestParams): 
         ],
         paddingAll: '16px',
       },
-    },
-    quickReply: {
-      items: [
-        {
-          type: 'action',
-          action: { type: 'message', label: 'yes', text: 'yes' },
-        },
-        {
-          type: 'action',
-          action: { type: 'message', label: 'no', text: 'no' },
-        },
-      ],
+      footer: {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#2d6a4f',
+            height: 'sm',
+            action: { type: 'message', label: 'Allow', text: 'yes' },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: { type: 'message', label: 'Deny', text: 'no' },
+          },
+        ],
+        paddingAll: '12px',
+      },
     },
   }
 }

@@ -74,7 +74,7 @@ describe('parseVerdict', () => {
 })
 
 describe('buildPermissionRequestMessage', () => {
-  test('builds flex message with quick reply', () => {
+  test('builds flex message with footer buttons', () => {
     const msg = buildPermissionRequestMessage({
       request_id: 'abcde',
       tool_name: 'Bash',
@@ -92,9 +92,12 @@ describe('buildPermissionRequestMessage', () => {
     expect(bodyTexts).toContain('Run a shell command')
     expect(bodyTexts).toContain('ls -la')
 
-    // Quick reply buttons
-    expect(msg.quickReply.items).toHaveLength(2)
-    expect(msg.quickReply.items[0].action.text).toBe('yes')
-    expect(msg.quickReply.items[1].action.text).toBe('no')
+    // Footer buttons (Allow / Deny)
+    const footer = msg.contents.footer
+    expect(footer.contents).toHaveLength(2)
+    expect(footer.contents[0].action.text).toBe('yes')
+    expect(footer.contents[0].action.label).toBe('Allow')
+    expect(footer.contents[1].action.text).toBe('no')
+    expect(footer.contents[1].action.label).toBe('Deny')
   })
 })
