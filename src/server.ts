@@ -182,30 +182,6 @@ console.error(`[line] Access mode: ${accessControl.getMode()}`)
 // --- Start Tunnel & Configure Webhook ---
 let killTunnel: (() => void) | null = null
 
-async function waitForTunnelReachable(url: string, maxAttempts: number = 10): Promise<void> {
-  const testUrl = `${url}/webhook`
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const res = await fetch(testUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-        signal: AbortSignal.timeout(3000),
-      })
-      // 401 = server responded (signature missing), tunnel is reachable
-      if (res.status === 401) {
-        console.error(`[line] Tunnel reachable (attempt ${i + 1}/${maxAttempts})`)
-        return
-      }
-    } catch {
-      // Connection failed, tunnel not ready yet
-    }
-    console.error(`[line] Waiting for tunnel to become reachable... (${i + 1}/${maxAttempts})`)
-    await new Promise((r) => setTimeout(r, 2000))
-  }
-  throw new Error('Tunnel URL never became reachable')
-}
-
 async function setupTunnelAndWebhook(): Promise<void> {
   console.error('[line] Starting cloudflared tunnel (killing existing tunnels first)...')
   const tunnel = await startTunnel(PORT)
@@ -213,20 +189,22 @@ async function setupTunnelAndWebhook(): Promise<void> {
   const webhookUrl = `${tunnel.url}/webhook`
   console.error(`[line] Tunnel URL: ${tunnel.url}`)
 
-  // Wait for tunnel to be externally reachable before calling LINE API
-  await waitForTunnelReachable(tunnel.url)
-
-  // Set webhook URL via LINE API (with retry since LINE validates reachability)
+  // Set webhook URL via LINE API with retry
+  // LINE validates reachability on PUT, so we retry with backoff
+  // to allow time for the tunnel to become reachable from LINE's servers
   console.error(`[line] Setting webhook URL: ${webhookUrl}`)
   let setOk = false
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
+    if (i > 0) {
+      const waitSec = 3 + i * 2 // 3s, 5s, 7s, 9s
+      console.error(`[line] Waiting ${waitSec}s for tunnel to propagate... (attempt ${i + 1}/5)`)
+      await new Promise((r) => setTimeout(r, waitSec * 1000))
+    }
     setOk = await lineClient.setWebhookUrl(webhookUrl)
     if (setOk) break
-    console.error(`[line] Webhook URL set attempt ${i + 1}/3 failed, retrying in 3s...`)
-    await new Promise((r) => setTimeout(r, 3000))
   }
   if (!setOk) {
-    throw new Error('Failed to set webhook URL via LINE API after 3 attempts')
+    throw new Error('Failed to set webhook URL via LINE API after 5 attempts')
   }
   console.error('[line] Webhook URL set successfully')
 
