@@ -19,5 +19,5 @@ export async function verifySignature(
     return false
   }
 
-  return crypto.subtle.verify('HMAC', key, sigBuf, encoder.encode(body))
+  return crypto.subtle.verify('HMAC', key, sigBuf.buffer as ArrayBuffer, encoder.encode(body))
 }
