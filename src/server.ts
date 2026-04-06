@@ -219,22 +219,6 @@ async function setupTunnelAndWebhook(): Promise<void> {
   throw new Error(`Webhook test failed after ${maxRetries} attempts`)
 }
 
-try {
-  await setupTunnelAndWebhook()
-  // Notify Claude Code session that LINE is ready
-  await mcp.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content: 'LINE channel ready. Tunnel established and webhook connectivity verified.',
-      meta: { status: 'ready' },
-    },
-  })
-} catch (err) {
-  const msg = err instanceof Error ? err.message : String(err)
-  console.error(`[line] Tunnel setup failed: ${msg}`)
-  console.error('[line] Continuing without tunnel. Set webhook URL manually.')
-}
-
 // --- Graceful Shutdown ---
 process.stdin.on('end', () => {
   console.error('[line] stdin closed, shutting down')
@@ -243,6 +227,29 @@ process.stdin.on('end', () => {
   process.exit(0)
 })
 
-// --- Connect MCP ---
+// --- Connect MCP first, then setup tunnel ---
 const transport = new StdioServerTransport()
 await mcp.connect(transport)
+
+// Run tunnel setup after MCP is connected (so notifications work)
+setupTunnelAndWebhook()
+  .then(async () => {
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: 'LINE channel ready. Tunnel established and webhook connectivity verified.',
+        meta: { status: 'ready' },
+      },
+    })
+  })
+  .catch(async (err) => {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[line] Tunnel setup failed: ${msg}`)
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `LINE tunnel setup failed: ${msg}. Set webhook URL manually.`,
+        meta: { status: 'error' },
+      },
+    })
+  })
