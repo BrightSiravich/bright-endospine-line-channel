@@ -11,6 +11,7 @@ interface WebhookAppOptions {
   channelSecret: string
   onTextMessage: (userId: string, text: string, eventId: string) => void
   onVerdict: (behavior: Verdict['behavior'], requestId: string) => void
+  getLastRequestId?: () => string | null
 }
 
 export function createWebhookApp(options: WebhookAppOptions) {
@@ -62,8 +63,8 @@ export function createWebhookApp(options: WebhookAppOptions) {
         const userId = event.source.userId
         const text = event.message.text
 
-        // Step 9: Check verdict pattern
-        const verdict = parseVerdict(text)
+        // Step 9: Check verdict pattern (bare yes/no uses last pending request_id)
+        const verdict = parseVerdict(text, options.getLastRequestId?.() ?? undefined)
         if (verdict) {
           options.onVerdict(verdict.behavior, verdict.requestId)
           continue

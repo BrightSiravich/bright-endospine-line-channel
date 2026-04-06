@@ -51,6 +51,26 @@ describe('parseVerdict', () => {
     const result = parseVerdict('')
     expect(result).toBeNull()
   })
+
+  test('bare "yes" with fallback request_id', () => {
+    const result = parseVerdict('yes', 'abcde')
+    expect(result).toEqual({ behavior: 'allow', requestId: 'abcde' })
+  })
+
+  test('bare "no" with fallback request_id', () => {
+    const result = parseVerdict('no', 'abcde')
+    expect(result).toEqual({ behavior: 'deny', requestId: 'abcde' })
+  })
+
+  test('bare "y" with fallback request_id', () => {
+    const result = parseVerdict('y', 'fghij')
+    expect(result).toEqual({ behavior: 'allow', requestId: 'fghij' })
+  })
+
+  test('bare "yes" without fallback returns null', () => {
+    const result = parseVerdict('yes')
+    expect(result).toBeNull()
+  })
 })
 
 describe('formatPermissionRequest', () => {
@@ -64,7 +84,7 @@ describe('formatPermissionRequest', () => {
     expect(msg).toContain('Bash')
     expect(msg).toContain('Run a shell command')
     expect(msg).toContain('ls -la')
-    expect(msg).toContain('yes abcde')
-    expect(msg).toContain('no abcde')
+    expect(msg).toContain('yes')
+    expect(msg).toContain('no')
   })
 })

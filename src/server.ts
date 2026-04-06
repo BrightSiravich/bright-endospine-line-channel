@@ -33,8 +33,9 @@ const accessPath = join(channelDir, 'access.json')
 const lineClient = createLineClient(ACCESS_TOKEN)
 const accessControl = await createAccessControl(accessPath)
 
-// Track last active user for permission relay
+// Track last active user and pending permission for relay
 let lastActiveUserId: string | null = null
+let lastPendingRequestId: string | null = null
 
 // --- MCP Server ---
 const mcp = new Server(
@@ -112,6 +113,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     console.error('[line] Permission request received but no active user')
     return
   }
+  lastPendingRequestId = params.request_id
   const msg = formatPermissionRequest(params)
   await lineClient.pushMessage(targetUserId, msg)
 })
@@ -162,11 +164,13 @@ const app = createWebhookApp({
     })
   },
   onVerdict: async (behavior, requestId) => {
+    lastPendingRequestId = null
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id: requestId, behavior },
     })
   },
+  getLastRequestId: () => lastPendingRequestId,
 })
 
 // --- Start HTTP Server ---
