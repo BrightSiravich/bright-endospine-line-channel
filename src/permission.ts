@@ -64,10 +64,10 @@ export function buildPermissionRequestMessage(params: PermissionRequestParams): 
             text: 'Permission Request',
             weight: 'bold',
             size: 'lg',
-            color: '#ffffff',
+            color: '#1a1a1a',
           },
         ],
-        backgroundColor: '#2c2c2c',
+        backgroundColor: '#f0f0f0',
         paddingAll: '16px',
       },
       body: {
