@@ -45,8 +45,15 @@ export function createWebhookApp(options: WebhookAppOptions) {
       return c.text('Invalid signature', 403)
     }
 
-    // Step 4: Return 200 immediately, process async
-    const body: LineWebhookBody = JSON.parse(rawBody)
+    // Step 4: Parse body — return 400 on malformed JSON.
+    // (Signature verified above, so a malformed body here is unusual but
+    // possible; better to return a clean 400 than let Hono surface a 500.)
+    let body: LineWebhookBody
+    try {
+      body = JSON.parse(rawBody)
+    } catch {
+      return c.text('Invalid JSON', 400)
+    }
 
     // Process events asynchronously
     queueMicrotask(() => {

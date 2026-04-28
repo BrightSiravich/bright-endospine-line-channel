@@ -3,6 +3,13 @@ const WEBHOOK_ENDPOINT_URL = 'https://api.line.me/v2/bot/channel/webhook/endpoin
 const WEBHOOK_TEST_URL = 'https://api.line.me/v2/bot/channel/webhook/test'
 const MAX_TEXT_LENGTH = 5000
 
+// LINE free plan limit: 200 push messages per month.
+// messageCount below is session-scoped (resets on process restart),
+// so this is a coarse warning, not a precise monthly tracker.
+// For accurate monthly usage, query LINE's quota API or persist to disk.
+const LINE_FREE_PLAN_MONTHLY_LIMIT = 200
+const RATE_LIMIT_WARN_THRESHOLD = 150
+
 export function splitText(text: string, maxLength: number): string[] {
   if (text.length <= maxLength) return [text]
   const chunks: string[] = []
@@ -14,6 +21,21 @@ export function splitText(text: string, maxLength: number): string[] {
 
 export function createLineClient(accessToken: string) {
   let messageCount = 0
+  let warnedAtThreshold = false
+
+  function recordMessageAndMaybeWarn(): void {
+    messageCount++
+    if (messageCount === RATE_LIMIT_WARN_THRESHOLD && !warnedAtThreshold) {
+      warnedAtThreshold = true
+      console.error(
+        `[line] WARNING: ${messageCount} push messages sent this session. ` +
+        `LINE free plan limit is ${LINE_FREE_PLAN_MONTHLY_LIMIT}/month. ` +
+        `Approaching limit — monitor closely or upgrade LINE plan.`,
+      )
+    } else if (messageCount % 50 === 0) {
+      console.error(`[line] ${messageCount} messages sent this session`)
+    }
+  }
 
   async function pushMessage(userId: string, text: string): Promise<void> {
     const chunks = splitText(text, MAX_TEXT_LENGTH)
@@ -29,13 +51,10 @@ export function createLineClient(accessToken: string) {
           messages: [{ type: 'text', text: chunk }],
         }),
       })
-      messageCount++
+      recordMessageAndMaybeWarn()
       if (!res.ok) {
         const body = await res.text()
         console.error(`[line] Push API error (${res.status}): ${body}`)
-      }
-      if (messageCount % 50 === 0) {
-        console.error(`[line] ${messageCount} messages sent this session`)
       }
     }
   }
@@ -49,7 +68,7 @@ export function createLineClient(accessToken: string) {
       },
       body: JSON.stringify({ to: userId, messages }),
     })
-    messageCount++
+    recordMessageAndMaybeWarn()
     if (!res.ok) {
       const body = await res.text()
       console.error(`[line] Push API error (${res.status}): ${body}`)
