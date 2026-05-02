@@ -131,3 +131,98 @@ When deploying on Mac Mini, regardless of code-level fixes:
 The code is honestly written and architecturally sound. Author chose the right primitives, implemented them correctly, and wrote tests that prove the security-critical paths actually work. The risk to Dr. Bright is operational ("first user, unfamiliar territory") not technical ("the code might do something bad").
 
 Proceed with deployment after applying the three recommended fixes (OP-1, R-1, R-2) and following the operational guardrails above.
+
+---
+
+## Addendum — 2026-05-02: Image-ingestion path
+
+**Author:** Porygon-Z (Opus 4.7) on behalf of Dr. Siravich Suvithayasiri
+**Scope:** Security review of the image-handling code added in this session
+(`src/types.ts` `LineImageMessage` + `isImageMessageEvent`,
+`src/line-api.ts` `getMessageContent`, `src/image-store.ts`,
+`src/webhook.ts` image branch, `src/server.ts` `onImageMessage` wiring).
+
+### Why this addendum exists
+
+The original audit reviewed a text-only channel. With image support, the
+channel now ingests user-supplied **bytes**, not just user-supplied **text**,
+and writes them to disk. That changes the threat model in three ways:
+
+1. A new external host is contacted: `api-data.line.me`.
+2. A new sanitization boundary appears: filename construction.
+3. A new disk-resident artifact appears: `.images/<eventId>.<ext>`.
+
+Each is reviewed below.
+
+### IMG-1: Filename sanitization
+
+| Concern | Mitigation |
+|---|---|
+| `webhookEventId` is webhook-controlled and used as a filename component. A hostile payload (`../../../etc/passwd`, `evil/path`, `\0`) could traverse out of `.images/`. | Two layers: (a) `assertSafeEventId` rejects anything outside `[A-Za-z0-9_-]` and lengths >128 chars before any path operation; (b) `image-store.save` re-checks that the resolved path stays inside `.images/`. Tests cover `..`, `/`, `\`, null byte, whitespace, RTL marker, oversized ids. |
+
+### IMG-2: MIME→extension mapping
+
+| Concern | Mitigation |
+|---|---|
+| LINE Content API can return any Content-Type. A misconfigured / hostile path that wrote attacker-chosen bytes with extension `.exe` or `.html` would be a phishing/exec vector if the file is later opened by other tools. | Allowlist of four MIMEs: `image/jpeg`, `image/png`, `image/gif`, `image/webp`. **No `.bin` fallback.** Anything outside the allowlist throws `UnsupportedImageTypeError` and the bytes are NOT written to disk. The error is surfaced to Claude via an explicit error MCP notification so Dr. Bright knows a drop occurred. |
+
+### IMG-3: Bounded download size
+
+| Concern | Mitigation |
+|---|---|
+| An unbounded `arrayBuffer()` could exhaust memory on a hostile or runaway response. | `MAX_IMAGE_BYTES = 12 MiB` (LINE's actual upload cap is 10 MB; 12 MiB gives headroom). Oversized responses throw before reaching disk. |
+
+### IMG-4: SSRF surface
+
+| Concern | Mitigation |
+|---|---|
+| LINE image events have a `contentProvider` field that can specify `external` with an `originalContentUrl` — fetching that URL would make the channel a confused-deputy SSRF gadget. | `isImageMessageEvent` rejects events with `contentProvider.type === 'external'`. Only `'line'` (or absent, defaulting to `'line'`) reaches the `getMessageContent` path, which hardcodes `api-data.line.me/v2/bot/message/{id}/content`. The `messageId` is character-validated before URL interpolation. Test coverage: `tests/types.test.ts` "external contentProvider is rejected" and `tests/webhook.test.ts` "image with external contentProvider is rejected". |
+
+### IMG-5: Sender gating extends to image fetches
+
+| Concern | Mitigation |
+|---|---|
+| Without gating, an unallowed user could (a) burn the LINE Content API quota and (b) write attacker-controlled bytes to disk simply by sending an image. | `server.ts:onImageMessage` re-checks `accessControl.isAllowed(userId)` BEFORE calling `getMessageContent`. Unallowed senders are silently dropped (parity with text-message behavior, no information leak). |
+
+### IMG-6: Disk privacy
+
+| Concern | Mitigation |
+|---|---|
+| Image content may include OR schedules with patient names — sensitive even on Dr. Bright's own machine. | `.images/` is created with mode `0700` (owner only), files written with mode `0600`. `.gitignore` includes `.images/` to prevent accidental commit — added in the same commit as the fetch code so no images can ever be created with the directory un-ignored. |
+
+### IMG-7: Quota counter (deferred)
+
+LINE Content API has its own quota separate from Push API. The channel does
+NOT currently track Content API call volume. Recommended follow-up: extend
+`recordMessageAndMaybeWarn`-style counter to `getMessageContent`.
+**Status:** known V2 task. Not blocking for V1 single-user use.
+
+### IMG-8: Manual cleanup (deferred)
+
+Files in `.images/` accumulate forever in V1 — no TTL, no retention cap.
+Recommended follow-up: cron task removing files older than 24 hours.
+**Status:** known V2 task. Operational mitigation: Kairyu deletes after use,
+or Dr. Bright periodically prunes manually.
+
+### Updated verdict
+
+The image-ingestion path is small, focused, and treats every external surface
+as untrusted. No new tools are exposed via MCP; no new HTTP endpoints; the
+write path is locked down by allowlist + charset validation + bounded size +
+permission bits. The two deferred items (IMG-7 quota counter, IMG-8 retention
+cleanup) are operational hygiene, not security gaps.
+
+**Verdict on the image path: PASS — safe for single-user deployment.**
+
+### Test coverage added in this pass
+
+| File | New tests | Covers |
+|---|---|---|
+| `tests/image-store.test.ts` (new) | 27 | MIME→ext mapping, allowlist, eventId charset, traversal rejection, file mode |
+| `tests/types.test.ts` (new) | 12 | `isImageMessageEvent` true/false matrix incl. external-provider rejection |
+| `tests/line-api.test.ts` (extended) | +5 | `getMessageContent` URL, auth header, MIME parse, error path, charset rejection |
+| `tests/webhook.test.ts` (extended) | +7 | image dispatch, group replyTo, dedup, no-callback safety, lift-is-image-only regression, non-message drop, external-provider rejection |
+
+All 99 tests pass under `bun test` (53 pre-existing + 46 new). Live LINE round-trip verification is
+deferred to the bridge restart following the launchd wrapper deploy (single
+verification boundary, per session plan).

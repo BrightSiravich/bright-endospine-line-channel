@@ -1,7 +1,15 @@
 const PUSH_API_URL = 'https://api.line.me/v2/bot/message/push'
 const WEBHOOK_ENDPOINT_URL = 'https://api.line.me/v2/bot/channel/webhook/endpoint'
 const WEBHOOK_TEST_URL = 'https://api.line.me/v2/bot/channel/webhook/test'
+// Content fetches (images, video, audio, file) live on a separate host —
+// api-data.line.me — distinct from the api.line.me control plane.
+// Spec: https://developers.line.biz/en/reference/messaging-api/#get-content
+const MESSAGE_CONTENT_URL = 'https://api-data.line.me/v2/bot/message'
 const MAX_TEXT_LENGTH = 5000
+// Hard cap on a single image fetch. LINE's actual image upload limit is
+// 10 MB, so 12 MB gives headroom while still bounding a malicious or runaway
+// download. Anything larger is treated as a fetch failure.
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 // LINE free plan limit: 200 push messages per month.
 // messageCount below is session-scoped (resets on process restart),
@@ -102,6 +110,35 @@ export function createLineClient(accessToken: string) {
     return data.endpoint
   }
 
+  async function getMessageContent(messageId: string): Promise<{ buffer: Buffer; mime: string }> {
+    // Defensive: messageId comes from the LINE webhook payload. LINE message
+    // IDs are numeric strings, but we don't trust the source unconditionally —
+    // restrict to a safe charset to prevent path-style injection into the URL.
+    if (!/^[A-Za-z0-9_-]+$/.test(messageId)) {
+      throw new Error(`getMessageContent: invalid messageId charset: ${messageId}`)
+    }
+    const url = `${MESSAGE_CONTENT_URL}/${messageId}/content`
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`getMessageContent: LINE Content API ${res.status}: ${body}`)
+    }
+    const mime = (res.headers.get('content-type') ?? 'application/octet-stream')
+      .split(';')[0]
+      .trim()
+      .toLowerCase()
+    const arrayBuf = await res.arrayBuffer()
+    if (arrayBuf.byteLength > MAX_IMAGE_BYTES) {
+      throw new Error(
+        `getMessageContent: response too large (${arrayBuf.byteLength} bytes, max ${MAX_IMAGE_BYTES})`,
+      )
+    }
+    return { buffer: Buffer.from(arrayBuf), mime }
+  }
+
   async function testWebhook(): Promise<{ success: boolean; statusCode?: number; reason?: string }> {
     const res = await fetch(WEBHOOK_TEST_URL, {
       method: 'POST',
@@ -120,7 +157,7 @@ export function createLineClient(accessToken: string) {
     return data
   }
 
-  return { pushMessage, pushRawMessages, setWebhookUrl, getWebhookUrl, testWebhook }
+  return { pushMessage, pushRawMessages, setWebhookUrl, getWebhookUrl, testWebhook, getMessageContent }
 }
 
 export type LineClient = ReturnType<typeof createLineClient>

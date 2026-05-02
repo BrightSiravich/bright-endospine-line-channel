@@ -5,3 +5,8 @@ dist/
 .claude/settings.json
 .docs/
 skills/
+# Image bytes fetched from LINE Content API. May contain sensitive content
+# (OR schedules with patient PII, screenshots from hospital LINE groups).
+# Created on demand at repo root with mode 0700; files written 0600.
+# NEVER commit the contents of this directory.
+.images/

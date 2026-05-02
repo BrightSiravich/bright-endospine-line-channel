@@ -13,7 +13,9 @@ import {
   buildPermissionRequestMessage,
 } from './permission'
 import { startTunnel } from './tunnel'
-import { join } from 'path'
+import { createImageStore, UnsupportedImageTypeError, UnsafeEventIdError } from './image-store'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 
 // --- Config ---
@@ -32,6 +34,12 @@ const channelDir = join(homedir(), '.claude', 'channels', 'line')
 const accessPath = join(channelDir, 'access.json')
 const lineClient = createLineClient(ACCESS_TOKEN)
 const accessControl = await createAccessControl(accessPath)
+
+// Image storage lives at <repo>/.images/. We resolve the repo dir from the
+// current source file (src/server.ts → repo root one up) so the location is
+// stable regardless of where bun was launched from.
+const REPO_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
+const imageStore = createImageStore({ baseDir: REPO_DIR })
 
 // Track last active reply target and pending permission for relay
 let lastReplyTo: string | null = null
@@ -162,6 +170,67 @@ const app = createWebhookApp({
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: { content: text, meta },
+    })
+  },
+  onImageMessage: async (userId, messageId, eventId, replyTo) => {
+    // Reuse the same sender-gating policy as text. We never want to fetch
+    // image bytes for unallowed users — that would burn LINE Content API
+    // quota on attackers and write attacker-controlled bytes to disk.
+    if (!accessControl.isAllowed(userId)) {
+      // Silently ignore: pairing flow is text-only, and fetching an image
+      // for an unallowed user has no benign justification.
+      return
+    }
+
+    let saved
+    try {
+      const { buffer, mime } = await lineClient.getMessageContent(messageId)
+      saved = imageStore.save(eventId, mime, buffer)
+    } catch (err) {
+      const reason =
+        err instanceof UnsupportedImageTypeError
+          ? `unsupported image type (${err.mime})`
+          : err instanceof UnsafeEventIdError
+            ? `unsafe eventId rejected`
+            : err instanceof Error
+              ? err.message
+              : String(err)
+      console.error(`[line] Image fetch/save failed (eventId=${eventId}): ${reason}`)
+      // Notify Claude so the user knows we saw something even if we couldn't
+      // store it. Path is omitted — there's no file to read.
+      lastReplyTo = replyTo
+      const meta: Record<string, string> = {
+        user_id: userId,
+        message_type: 'image',
+        status: 'error',
+        error: reason,
+      }
+      if (replyTo !== userId) meta.group_id = replyTo
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: `[Image received but failed to store: ${reason}]`,
+          meta,
+        },
+      })
+      return
+    }
+
+    lastReplyTo = replyTo
+    const meta: Record<string, string> = {
+      user_id: userId,
+      message_type: 'image',
+      image_path: saved.path,
+      image_ext: saved.ext,
+      image_size: String(saved.size),
+    }
+    if (replyTo !== userId) meta.group_id = replyTo
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `[Image received: ${saved.path}]`,
+        meta,
+      },
     })
   },
   onVerdict: async (behavior, requestId) => {

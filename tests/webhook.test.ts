@@ -209,4 +209,253 @@ describe('webhook', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(onTextMessage).toHaveBeenCalledTimes(1)
   })
+
+  // ---------------- Image dispatch ----------------
+
+  test('calls onImageMessage for image message events with correct args', async () => {
+    const onImageMessage = mock(() => {})
+    const onTextMessage = mock(() => {})
+    const body = JSON.stringify({
+      destination: 'U123',
+      events: [{
+        type: 'message',
+        webhookEventId: 'evt_img_001',
+        timestamp: Date.now(),
+        source: { type: 'user', userId: 'U_sender' },
+        message: {
+          type: 'image',
+          id: '460000000000000001',
+          contentProvider: { type: 'line' },
+        },
+      }],
+    })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage,
+      onImageMessage,
+      onVerdict: mock(() => {}),
+    })
+    const res = await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    expect(res.status).toBe(200)
+    await new Promise((r) => setTimeout(r, 10))
+    // Image branch fired, text branch did NOT.
+    expect(onImageMessage).toHaveBeenCalledTimes(1)
+    expect(onTextMessage).toHaveBeenCalledTimes(0)
+    const [userId, messageId, eventId, replyTo] = onImageMessage.mock.calls[0]
+    expect(userId).toBe('U_sender')
+    expect(messageId).toBe('460000000000000001')
+    expect(eventId).toBe('evt_img_001')
+    // 1:1 chat → replyTo falls back to userId.
+    expect(replyTo).toBe('U_sender')
+  })
+
+  test('passes groupId as replyTo for image messages from groups', async () => {
+    const onImageMessage = mock(() => {})
+    const body = JSON.stringify({
+      destination: 'U123',
+      events: [{
+        type: 'message',
+        webhookEventId: 'evt_img_grp',
+        timestamp: Date.now(),
+        source: { type: 'group', groupId: 'C_group_OR', userId: 'U_sender' },
+        message: { type: 'image', id: 'msg_img_grp', contentProvider: { type: 'line' } },
+      }],
+    })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage: mock(() => {}),
+      onImageMessage,
+      onVerdict: mock(() => {}),
+    })
+    await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(onImageMessage).toHaveBeenCalledTimes(1)
+    expect(onImageMessage.mock.calls[0][3]).toBe('C_group_OR')
+  })
+
+  test('image events are deduplicated alongside text events', async () => {
+    const onImageMessage = mock(() => {})
+    const event = {
+      type: 'message',
+      webhookEventId: 'evt_img_dup',
+      timestamp: Date.now(),
+      source: { type: 'user', userId: 'U_sender' },
+      message: { type: 'image', id: 'msg_dup_img', contentProvider: { type: 'line' } },
+    }
+    const body = JSON.stringify({ destination: 'U123', events: [event] })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage: mock(() => {}),
+      onImageMessage,
+      onVerdict: mock(() => {}),
+    })
+    await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(onImageMessage).toHaveBeenCalledTimes(1)
+  })
+
+  test('image events drop silently if onImageMessage is not provided', async () => {
+    // Backward-compat: a caller that only registers onTextMessage should NOT
+    // crash when an image event arrives.
+    const onTextMessage = mock(() => {})
+    const body = JSON.stringify({
+      destination: 'U123',
+      events: [{
+        type: 'message',
+        webhookEventId: 'evt_img_noop',
+        timestamp: Date.now(),
+        source: { type: 'user', userId: 'U_sender' },
+        message: { type: 'image', id: 'msg', contentProvider: { type: 'line' } },
+      }],
+    })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage,
+      onVerdict: mock(() => {}),
+      // onImageMessage intentionally omitted.
+    })
+    const res = await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(res.status).toBe(200)
+    expect(onTextMessage).toHaveBeenCalledTimes(0)
+  })
+
+  // ---------------- Non-text-non-image events still drop ----------------
+
+  test('lift is image-only — sticker/video/audio/location/file still drop', async () => {
+    // Critical: this is the regression guard that proves we did NOT blanket
+    // un-drop everything at line 65. Each non-image, non-text event must
+    // pass through without calling any callback.
+    const onTextMessage = mock(() => {})
+    const onImageMessage = mock(() => {})
+    const onVerdict = mock(() => {})
+
+    for (const messageType of ['sticker', 'video', 'audio', 'location', 'file']) {
+      const body = JSON.stringify({
+        destination: 'U123',
+        events: [{
+          type: 'message',
+          webhookEventId: `evt_${messageType}_001`,
+          timestamp: Date.now(),
+          source: { type: 'user', userId: 'U_sender' },
+          message: { type: messageType, id: `msg_${messageType}` },
+        }],
+      })
+      const sig = await computeSignature(body, SECRET)
+      const app = createWebhookApp({
+        channelSecret: SECRET,
+        onTextMessage,
+        onImageMessage,
+        onVerdict,
+      })
+      const res = await app.request('/webhook', {
+        method: 'POST',
+        body,
+        headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+      })
+      expect(res.status).toBe(200)
+      await new Promise((r) => setTimeout(r, 5))
+    }
+
+    expect(onTextMessage).toHaveBeenCalledTimes(0)
+    expect(onImageMessage).toHaveBeenCalledTimes(0)
+    expect(onVerdict).toHaveBeenCalledTimes(0)
+  })
+
+  test('non-message event types (follow, unfollow, postback) still drop', async () => {
+    const onTextMessage = mock(() => {})
+    const onImageMessage = mock(() => {})
+
+    for (const eventType of ['follow', 'unfollow', 'postback']) {
+      const body = JSON.stringify({
+        destination: 'U123',
+        events: [{
+          type: eventType,
+          webhookEventId: `evt_${eventType}_001`,
+          timestamp: Date.now(),
+          source: { type: 'user', userId: 'U_sender' },
+        }],
+      })
+      const sig = await computeSignature(body, SECRET)
+      const app = createWebhookApp({
+        channelSecret: SECRET,
+        onTextMessage,
+        onImageMessage,
+        onVerdict: mock(() => {}),
+      })
+      const res = await app.request('/webhook', {
+        method: 'POST',
+        body,
+        headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+      })
+      expect(res.status).toBe(200)
+      await new Promise((r) => setTimeout(r, 5))
+    }
+
+    expect(onTextMessage).toHaveBeenCalledTimes(0)
+    expect(onImageMessage).toHaveBeenCalledTimes(0)
+  })
+
+  test('image with external contentProvider is rejected (does not fire onImageMessage)', async () => {
+    // External-provider images would force us to fetch from an
+    // attacker-controlled URL — type guard must reject these even though
+    // they're nominally "image" type.
+    const onImageMessage = mock(() => {})
+    const body = JSON.stringify({
+      destination: 'U123',
+      events: [{
+        type: 'message',
+        webhookEventId: 'evt_img_external',
+        timestamp: Date.now(),
+        source: { type: 'user', userId: 'U_sender' },
+        message: {
+          type: 'image',
+          id: 'extmsg',
+          contentProvider: {
+            type: 'external',
+            originalContentUrl: 'https://attacker.example/x.png',
+          },
+        },
+      }],
+    })
+    const sig = await computeSignature(body, SECRET)
+    const app = createWebhookApp({
+      channelSecret: SECRET,
+      onTextMessage: mock(() => {}),
+      onImageMessage,
+      onVerdict: mock(() => {}),
+    })
+    await app.request('/webhook', {
+      method: 'POST',
+      body,
+      headers: { 'x-line-signature': sig, 'content-type': 'application/json' },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(onImageMessage).toHaveBeenCalledTimes(0)
+  })
 })

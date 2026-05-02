@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { verifySignature } from './signature'
 import { parseVerdict } from './permission'
-import { isTextMessageEvent } from './types'
+import { isTextMessageEvent, isImageMessageEvent } from './types'
 import type { LineWebhookBody } from './types'
 import type { Verdict } from './permission'
 
@@ -11,6 +11,21 @@ interface WebhookAppOptions {
   channelSecret: string
   onTextMessage: (userId: string, text: string, eventId: string, replyTo: string) => void
   onVerdict: (behavior: Verdict['behavior'], requestId: string) => void
+  /**
+   * Called when an image message arrives. The webhook handler ONLY guarantees
+   * dedup + signature + structural validity; downloading the bytes, persisting
+   * them, and forwarding the MCP notification are the caller's responsibility.
+   *
+   * `messageId` is the LINE message id — call `lineClient.getMessageContent`
+   * with it to retrieve the bytes. `eventId` is the webhookEventId, suitable
+   * (after sanitization in image-store) as a filename component.
+   */
+  onImageMessage?: (
+    userId: string,
+    messageId: string,
+    eventId: string,
+    replyTo: string,
+  ) => void
   getLastRequestId?: () => string | null
 }
 
@@ -61,25 +76,44 @@ export function createWebhookApp(options: WebhookAppOptions) {
       if (body.events.length === 0) return
 
       for (const event of body.events) {
-        // Step 6: Filter text message events
-        if (!isTextMessageEvent(event)) continue
+        // Step 6: Dispatch by message type. Text and image are handled;
+        // every other event type (sticker, video, audio, location, file,
+        // follow, unfollow, postback, …) is still silently dropped.
+        if (isTextMessageEvent(event)) {
+          // Step 7: Deduplicate
+          if (dedup(event.webhookEventId)) continue
 
-        // Step 7: Deduplicate
-        if (dedup(event.webhookEventId)) continue
+          const userId = event.source.userId
+          const text = event.message.text
+          const replyTo = event.source.groupId ?? event.source.roomId ?? userId
 
-        const userId = event.source.userId
-        const text = event.message.text
-        const replyTo = event.source.groupId ?? event.source.roomId ?? userId
+          // Step 8: Check verdict pattern (bare yes/no uses last pending request_id)
+          const verdict = parseVerdict(text, options.getLastRequestId?.() ?? undefined)
+          if (verdict) {
+            options.onVerdict(verdict.behavior, verdict.requestId)
+            continue
+          }
 
-        // Step 9: Check verdict pattern (bare yes/no uses last pending request_id)
-        const verdict = parseVerdict(text, options.getLastRequestId?.() ?? undefined)
-        if (verdict) {
-          options.onVerdict(verdict.behavior, verdict.requestId)
+          // Step 9: Regular text message
+          options.onTextMessage(userId, text, event.webhookEventId, replyTo)
           continue
         }
 
-        // Step 10: Regular message
-        options.onTextMessage(userId, text, event.webhookEventId, replyTo)
+        if (isImageMessageEvent(event) && options.onImageMessage) {
+          // Step 7: Deduplicate (same dedup pool as text — webhookEventIds
+          // are unique across all event types per LINE spec).
+          if (dedup(event.webhookEventId)) continue
+
+          const userId = event.source.userId
+          const messageId = event.message.id
+          const replyTo = event.source.groupId ?? event.source.roomId ?? userId
+
+          // Step 9: Image message — caller fetches bytes and persists.
+          options.onImageMessage(userId, messageId, event.webhookEventId, replyTo)
+          continue
+        }
+
+        // Anything else: drop (parity with prior behavior for non-text events).
       }
     })
 

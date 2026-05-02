@@ -126,7 +126,29 @@ bun test
 - Claude Code Channels は Research Preview (要 `--dangerously-load-development-channels`)
 - LINE 無料プランは月 200 通
 - Quick tunnel の URL はプロセス再起動で変わる (自動再設定される)
-- テキストメッセージのみ (画像・ファイル非対応)
+- テキスト・画像対応 (ファイル・動画・音声・スタンプ非対応)
+
+## Image handling
+
+Inbound image messages are fetched via the LINE Content API
+(`api-data.line.me/v2/bot/message/{messageId}/content`) and persisted to
+`<repo>/.images/<webhookEventId>.<ext>`. Claude reads the file with its `Read`
+tool; the path is forwarded as a `notifications/claude/channel` MCP
+notification of the form `[Image received: <absolute path>]`.
+
+| Aspect | V1 policy |
+|---|---|
+| Supported MIME | `image/jpeg`, `image/png`, `image/gif`, `image/webp` |
+| Unsupported MIME | Logged + dropped (no `.bin` fallback) |
+| External `contentProvider` | Rejected at the type guard (SSRF defense) |
+| Storage location | `<repo>/.images/` — gitignored, mode 0700, files 0600 |
+| Filename source | Validated `webhookEventId` (charset `[A-Za-z0-9_-]`, ≤128 chars) |
+| Cleanup | Manual (`rm`) — automatic cleanup is a V2 task |
+| Outbound images | Not supported — `line_reply` stays text-only |
+| Sender gating | Same as text — only allowlisted users' images are fetched |
+
+`.images/` MUST NOT be committed. The directory is in `.gitignore` and
+contents may include OR schedules with patient PII.
 
 ## License
 
